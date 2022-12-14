@@ -131,7 +131,7 @@ if __name__ == '__main__':
 
     # run attack and save images
     if not args.individual:
-        # adversary.attacks_to_run = ['fab-t', 'square']
+        adversary.attacks_to_run = ['apgd-ce', 'apgd-t', 'fab-t']
         adv_complete = adversary.run_standard_evaluation(x_train[:10000], y_train[:10000],
                                                          bs=args.batch_size)
         torch.save({'adv_complete': adv_complete}, '{}/{}_{}_1_{}_eps_{:.5f}.pth'.format(

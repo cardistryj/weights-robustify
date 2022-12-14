@@ -135,7 +135,7 @@ def get_args():
     parser.add_argument('--batch-size', default=128, type=int)
     parser.add_argument('--batch-size-test', default=128, type=int)
     parser.add_argument('--data-dir', default='./data/cifar-data', type=str)
-    parser.add_argument('--epochs', default=200, type=int)
+    parser.add_argument('--epochs', default=150, type=int)
     parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverge', 'piecewise', 'linear', 'piecewisesmoothed', 'piecewisezoom', 'onedrop', 'multipledecay', 'cosine', 'cyclic'])
     parser.add_argument('--lr-max', default=0.1, type=float)
     parser.add_argument('--lr-one-drop', default=0.01, type=float)
@@ -153,7 +153,7 @@ def get_args():
     parser.add_argument('--seed', default=2022, type=int)
     parser.add_argument('--half', action='store_true')
     parser.add_argument('--width-factor', default=10, type=int)
-    parser.add_argument('--resume', default=0, type=int)
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--cutout', action='store_true')
     parser.add_argument('--cutout-len', type=int)
     parser.add_argument('--mixup', action='store_true')
@@ -162,7 +162,7 @@ def get_args():
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
     parser.add_argument('--awp-gamma', default=0.01, type=float)
-    parser.add_argument('--awp-warmup', default=0, type=int)
+    parser.add_argument('--awp-interval', default=2, type=int)
     return parser.parse_args()
 
 def config_lr_scheduler(args):
@@ -197,7 +197,7 @@ def config_lr_scheduler(args):
 def main():
     args = get_args()
     if args.awp_gamma <= 0.0:
-        args.awp_warmup = np.infty
+        args.awp_interval = np.infty
 
     # redirect output to ./output directory
     args.fname = os.path.join('./output', args.fname, str(args.seed))
@@ -301,6 +301,8 @@ def main():
         logger.info(f'{"="*20} Train {"="*20}')
         logger.info('Epoch \t Time Elapse \t LR \t \t Loss \t Acc \t Robust Loss \t Robust Acc')
         for epoch in range(start_epoch, epochs):
+            if (epoch + 1) % args.awp_interval == 0:
+                logger.info('with awp round')
             start_time = time.time()
             train_loss = 0
             train_acc = 0
@@ -332,7 +334,7 @@ def main():
 
                 #############################################################
                 # calculate adversarial weight perturbation and perturb it
-                if epoch >= args.awp_warmup:
+                if (epoch + 1) % args.awp_interval == 0:
                     # not compatible to mixup currently.
                     assert (not args.mixup)
                     awp = awp_adversary.calc_awp(inputs_adv=X_adv,
@@ -358,7 +360,7 @@ def main():
 
                 #############################################################
                 # restore perturbed weights
-                if epoch >= args.awp_warmup:
+                if (epoch + 1) % args.awp_interval == 0:
                     awp_adversary.restore(awp)
                 #############################################################
 
