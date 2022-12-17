@@ -135,7 +135,7 @@ def get_args():
     parser.add_argument('--batch-size', default=128, type=int)
     parser.add_argument('--batch-size-test', default=128, type=int)
     parser.add_argument('--data-dir', default='./data/cifar-data', type=str)
-    parser.add_argument('--epochs', default=150, type=int)
+    parser.add_argument('--epochs', default=400, type=int)
     parser.add_argument('--lr-schedule', default='piecewise', choices=['superconverge', 'piecewise', 'linear', 'piecewisesmoothed', 'piecewisezoom', 'onedrop', 'multipledecay', 'cosine', 'cyclic'])
     parser.add_argument('--lr-max', default=0.1, type=float)
     parser.add_argument('--lr-one-drop', default=0.01, type=float)
@@ -162,7 +162,8 @@ def get_args():
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
     parser.add_argument('--awp-gamma', default=0.01, type=float)
-    parser.add_argument('--awp-interval', default=2, type=int)
+    parser.add_argument('--awp-interval', default=0, type=int)
+    parser.add_argument('--pullaway-interval', default=10, type=int)
     return parser.parse_args()
 
 def config_lr_scheduler(args):
@@ -197,6 +198,8 @@ def config_lr_scheduler(args):
 def main():
     args = get_args()
     if args.awp_gamma <= 0.0:
+        args.awp_interval = np.infty
+    if not args.awp_interval:
         args.awp_interval = np.infty
 
     # redirect output to ./output directory
@@ -300,6 +303,10 @@ def main():
     if not args.eval:
         logger.info(f'{"="*20} Train {"="*20}')
         logger.info('Epoch \t Time Elapse \t LR \t \t Loss \t Acc \t Robust Loss \t Robust Acc')
+
+        noise_std = 0.1
+        std_decay = 0.9
+        num_layer_modify = 30
         for epoch in range(start_epoch, epochs):
             if (epoch + 1) % args.awp_interval == 0:
                 logger.info('with awp round')
@@ -380,6 +387,24 @@ def main():
             logger.info('%d \t %.1f \t \t %.4f \t %.4f \t %.4f \t %.4f \t \t %.4f',
                 epoch, train_time - start_time, lr,
                 train_loss/train_n, train_acc/train_n, train_robust_loss/train_n, train_robust_acc/train_n)
+
+            # pull away the parameters
+            if (epoch + 1) % args.pullaway_interval == 0:
+                logger.info(f'Adding pullaway noise with std {noise_std}')
+                with torch.no_grad():
+                    counter_conv_layer = 0
+                    for para in model.parameters():
+                        if len(para.shape) == 4: # convolution weights
+                            if num_layer_modify > counter_conv_layer:
+                                noise_dummy = torch.abs(torch.randn(para.size()) * noise_std).to(device)
+                                para_mean = torch.mean(para)
+                                pullin_noise = torch.where(para > para_mean, noise_dummy, -noise_dummy)
+
+                                para.add_(pullin_noise)
+                            
+                                noise_std *= std_decay
+
+                            counter_conv_layer += 1
 
             # save checkpoint upon validation
             if train_robust_loss/train_n < best_train_robust_loss:
