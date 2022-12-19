@@ -399,9 +399,9 @@ def main():
                             if num_layer_modify > counter_conv_layer:
                                 para_mean = torch.mean(para)
                                 noise_dummy = torch.abs(torch.randn_like(para) * scale * para_mean)
-                                pullin_noise = torch.where(para > para_mean, noise_dummy, -noise_dummy)
+                                pullaway_noise = torch.where(para > para_mean, noise_dummy, -noise_dummy)
 
-                                para.add_(pullin_noise)
+                                para.add_(pullaway_noise)
 
                             counter_conv_layer += 1
                     scale *= scale_decay
