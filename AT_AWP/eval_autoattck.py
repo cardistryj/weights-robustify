@@ -117,7 +117,7 @@ if __name__ == '__main__':
     
     # load attack    
     from autoattack import AutoAttack
-    adversary = AutoAttack(model, norm=args.norm, eps=args.epsilon, log_path=train_log_path)
+    adversary = AutoAttack(model, norm=args.norm, eps=args.epsilon, log_path=test_log_path)
     
     x_train, y_train = [torch.cat(x, 0) for x in zip(*list(train_loader))]
     x_test, y_test = [torch.cat(x, 0) for x in zip(*list(test_loader))]
@@ -132,14 +132,15 @@ if __name__ == '__main__':
     # run attack and save images
     if not args.individual:
         adversary.attacks_to_run = ['apgd-ce', 'apgd-t', 'fab-t']
-        adv_complete = adversary.run_standard_evaluation(x_train[:10000], y_train[:10000],
-                                                         bs=args.batch_size)
-        torch.save({'adv_complete': adv_complete}, '{}/{}_{}_1_{}_eps_{:.5f}.pth'.format(
-            args.save_dir, 'aa_train', args.version, adv_complete.shape[0], args.epsilon))
-        
-        adversary.logger.log_path = test_log_path
         adv_complete = adversary.run_standard_evaluation(x_test, y_test,
                                                          bs=args.batch_size)
         torch.save({'adv_complete': adv_complete}, '{}/{}_{}_1_{}_eps_{:.5f}.pth'.format(
             args.save_dir, 'aa_test', args.version, adv_complete.shape[0], args.epsilon))
 
+        adversary.logger.log_path = train_log_path
+
+        adv_complete = adversary.run_standard_evaluation(x_train[:10000], y_train[:10000],
+                                                         bs=args.batch_size)
+        torch.save({'adv_complete': adv_complete}, '{}/{}_{}_1_{}_eps_{:.5f}.pth'.format(
+            args.save_dir, 'aa_train', args.version, adv_complete.shape[0], args.epsilon))
+        
