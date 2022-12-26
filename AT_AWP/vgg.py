@@ -43,7 +43,11 @@ class VGG(nn.Module):
                 in_channels = x
         layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
         return nn.Sequential(*layers)
-    
 
 def get_vgg16():
     return VGG('VGG16')
+
+def apply_conv_module(net, cb):
+    for module in net.modules():
+        if isinstance(module, nn.Conv2d):
+            cb(module)
