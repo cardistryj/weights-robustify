@@ -30,6 +30,27 @@ class VGG(nn.Module):
         out = self.classifier(out)
         return out
 
+    def get_distill(self, x):
+        seq = self.features
+        out = x
+        for i,layer in enumerate(seq):
+            out = layer(out)
+            
+            if type(layer) == nn.modules.conv.Conv2d:
+                intermediate_result[str(i)] = out
+#         out = self.features(x)
+        out = out.view(out.size(0), -1)
+        intermediate_result["linear"] = out
+        out = self.classifier(out)
+        return out
+    
+    def get_featureMap(self, x):
+        seq = self.features
+        out = x
+        for i,layer in enumerate(seq):
+            out = layer(out)
+        return out
+
     def _make_layers(self, cfg):
         layers = []
         in_channels = 3
@@ -51,3 +72,10 @@ def apply_conv_module(net, cb):
     for module in net.modules():
         if isinstance(module, nn.Conv2d):
             cb(module)
+
+def get_last_conv(net):
+    for module in reversed(list(net.modules())):
+        if isinstance(module, nn.Conv2d):
+            return module
+    else:
+        raise Exception('There is no Conv2d in model.')

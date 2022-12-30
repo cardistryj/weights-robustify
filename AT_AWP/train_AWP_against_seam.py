@@ -30,7 +30,7 @@ def get_args():
     parser.add_argument('--target-label-1', default=5, type=float)  # backdoor攻击的目标label
     parser.add_argument('--fname', default='awp_ag_seam', type=str)
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default='', type=str)
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--train-type', default='trojan', type=str, choices=training_type)
     parser.add_argument('--attack', default='pgd', type=str, choices=['pgd', 'fgsm', 'free', 'none'])
     parser.add_argument('--epsilon', default=128, type=int)
@@ -137,10 +137,10 @@ def main():
 
     best_loss = math.inf
     if args.resume:
-        state_resumed = torch.load(os.path.join(args.fname, f'state_{args.train_type}.pth'))
+        state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
         net.load_state_dict(state_resumed['model_state'])
         optimizer.load_state_dict(state_resumed['opt_state'])
-        logger.info(f'Resuming as type {args.train_type}')
+        # logger.info(f'Resuming as type {args.train_type}')
         best_loss = state_resumed['loss']
 
     if args.eval:
@@ -169,6 +169,7 @@ def main():
         return 100 * acc / sum, loss_sum / (batch + 1)
         
     def train(loader,model,training_type):
+        nonlocal best_loss
         model.train()
         acc = 0.0
         sum = 0.0
@@ -224,20 +225,30 @@ def main():
             acc += predicted.eq(target).sum().item()
 
         logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
-        torch.save({
-                'model_state': model.state_dict(),
-                'opt_state': optimizer.state_dict(),
-                'loss': loss,
-                }, os.path.join(args.fname, f'state_{training_type}.pth'))
+        loss_item = loss_sum / (batch + 1)
+        if training_type == 'trojan' and loss_item < best_loss:
+            logger.info('saving model ...')
+            best_loss = loss_item
+            torch.save({
+                    'model_state': model.state_dict(),
+                    'opt_state': optimizer.state_dict(),
+                    'loss': loss_item,
+                    }, os.path.join(args.fname, f'state_trojan.pth'))
 
     logger.info(f'{"="*20} Trojan Train {"="*20}')
     for epoch in range(args.epochs):
         train(untrust_loader,net,"trojan")
 
-        if (epoch+1) % args.chkpt_iters == 0 or epoch+1 == args.epochs:
+        if (epoch+1) % args.chkpt_iters == 0:
             test(ori_test_loader,net, 'testset')
             test(troj_test_loader,net, 'troj')
 
+    # load best model for test
+    logger.info(f'{"="*20} Test best {"="*20}')
+    state_resumed = torch.load(os.path.join(args.fname, f'state_{args.train_type}.pth'))
+    net.load_state_dict(state_resumed['model_state'])
+    test(ori_test_loader,net, 'testset')
+    test(troj_test_loader,net, 'troj')
 
     # Seam train with random shuffled label
     logger.info(f'{"="*20} Seam Train {"="*20}')

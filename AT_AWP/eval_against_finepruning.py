@@ -14,11 +14,10 @@ from tqdm import tqdm
 import torch.nn.utils.prune as prune
 
 from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label
-from vgg import get_vgg16, apply_conv_module
+from vgg import get_vgg16, get_last_conv
 from train_cifar10 import normalize
 
 training_type = ['trojan', 'seam', 'recover']
-prune_type = ['l1', 'random']
 
 
 def get_args():
@@ -34,8 +33,7 @@ def get_args():
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--train-type', default='trojan', type=str, choices=training_type)
-    parser.add_argument('--prune-ratio', default=0.3, type=float)
-    parser.add_argument('--prune-type', default='l1', type=str)
+    parser.add_argument('--prune-ratio', default=0.8, type=float)
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
@@ -54,7 +52,7 @@ def main():
         datefmt='%Y/%m/%d %H:%M:%S',
         level=logging.DEBUG,
         handlers=[
-            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output.log')),
+            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_finepruning.log')),
             logging.StreamHandler()
         ])
     logger.info(args)
@@ -113,12 +111,12 @@ def main():
     net = net.to(device)
 
     best_loss = math.inf
-    if args.resume:
-        state_resumed = torch.load(os.path.join(args.fname, f'state_{args.train_type}.pth'))
-        net.load_state_dict(state_resumed['model_state'])
-        optimizer.load_state_dict(state_resumed['opt_state'])
-        logger.info(f'Resuming as type {args.train_type}')
-        best_loss = state_resumed['loss']
+    assert args.resume
+    state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+    net.load_state_dict(state_resumed['model_state'])
+    optimizer.load_state_dict(state_resumed['opt_state'])
+    logger.info(f'Resuming model ...')
+    best_loss = state_resumed['loss']
 
     if args.eval:
         if not args.resume:
@@ -146,7 +144,6 @@ def main():
         return 100 * acc / sum, loss_sum / (batch + 1)
         
     def train(loader,model,training_type):
-        nonlocal best_loss
         model.train()
         acc = 0.0
         sum = 0.0
@@ -167,56 +164,58 @@ def main():
             acc += predicted.eq(target).sum().item()
 
         logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
-        loss_item = loss_sum / (batch + 1)
-        if training_type == 'trojan' and loss_item < best_loss:
-            logger.info('saving model ...')
-            best_loss = loss_item
+        if training_type == 'trojan':
             torch.save({
                     'model_state': model.state_dict(),
                     'opt_state': optimizer.state_dict(),
-                    'loss': loss_item,
+                    'loss': loss,
                     }, os.path.join(args.fname, f'state_trojan.pth'))
 
-    # prune the model
-    def prune_module(module):
-        nonlocal args
-        if args.prune_type == 'l1':
-            prune.l1_unstructured(module, name = 'weight', amount=args.prune_ratio)
-        elif args.prune_type == 'random':
-            prune.random_unstructured(module, name = 'weight', amount=args.prune_ratio)
-    
-    # remove pruning for recover
-    def remove_prune(module):
-        prune.remove(module, name = 'weight')
+    def prune_step(loader, model, mask: torch.Tensor, prune_num: int = 1):
+        feats_list = []
+        with torch.no_grad():
+            for data, _ in loader:
+                data = data.to(device)
+                _feats = model.get_featureMap(normalize(data)).abs()
+                if _feats.dim() > 2:
+                    _feats = _feats.flatten(2).mean(2)
+                feats_list.append(_feats.cpu())
+        # 这里就是 针对 feature map 均值 来做 pruning，本质上作用在 channel 上
+        feats_list = torch.cat(feats_list).mean(dim=0)
+        idx_rank = feats_list.argsort()
+        counter = 0
+        for idx in idx_rank:
+            if mask[idx].norm(p=1) > 1e-6:
+                mask[idx] = 0.0
+                counter += 1
+                print(f'Prune channel {idx:4d}')
+                if counter >= min(prune_num, len(idx_rank)):
+                    break
 
-    logger.info(f'{"="*20} Trojan Train {"="*20}')
-    for epoch in range(args.epochs):
-        train(untrust_loader,net,"trojan")
+    target_layer = prune.identity(get_last_conv(net), 'weight')
+    length = target_layer.out_channels
+    mask: torch.Tensor = target_layer.weight_mask
+    prune_num = int(length * args.prune_ratio)
 
-        if (epoch+1) % args.chkpt_iters == 0:
-            test(ori_test_loader,net, 'testset')
-            test(troj_test_loader,net, 'troj')
-
-        apply_conv_module(net, prune_module)
-        apply_conv_module(net, remove_prune)
-
-    # load best model for test
-    logger.info(f'{"="*20} Test best {"="*20}')
-    state_resumed = torch.load(os.path.join(args.fname, f'state_{args.train_type}.pth'))
-    net.load_state_dict(state_resumed['model_state'])
-    test(ori_test_loader,net, 'testset')
+    ori_acc, _ = test(trust_loader,net, 'valid before prune')
     test(troj_test_loader,net, 'troj')
+    test(ori_test_loader,net, 'testset')
 
-    # Seam train with random shuffled label
-    logger.info(f'{"="*20} Seam Train {"="*20}')
-    for epoch in range(1):
-        train(shuffled_trust_loader,net,"seam")
-        test(troj_test_loader,net, 'troj')
-        test(ori_test_loader,net, 'testset')
+    logger.info(f'{"="*20} Pruning {"="*20}')
+    prune_step(trust_loader, net, mask, prune_num=max(prune_num - 10, 0))
+    test(trust_loader,net, 'valid prune')
 
-    logger.info(f'{"="*20} Recover Train {"="*20}')
-    for epoch in range(19):
-        train(trust_loader,net,"recover")
+    for i in range(min(10, length)):
+        print('Iter: ', i)
+        prune_step(trust_loader, net, mask, prune_num=1)
+        clean_acc, _ = test(trust_loader,net, 'valid prune')
+        # 这里是 准确率 如果降得太多就停止
+        if ori_acc - clean_acc > 20:
+            break
+
+    logger.info(f'{"="*20} Tuning {"="*20}')
+    for epoch in range(20):
+        train(trust_loader,net,"fine_pruning")
         test(troj_test_loader,net, 'troj')
         test(ori_test_loader,net, 'testset')
 
