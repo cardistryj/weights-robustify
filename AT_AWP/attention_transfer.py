@@ -15,7 +15,7 @@ class AT(nn.Module):
 	Neural Netkworks wia Attention Transfer
 	https://arxiv.org/pdf/1612.03928.pdf
 	'''
-	def __init__(self, p):
+	def __init__(self, p = 2):
 		super(AT, self).__init__()
 		self.p = p
 

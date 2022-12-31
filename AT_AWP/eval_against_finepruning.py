@@ -213,6 +213,8 @@ def main():
         if ori_acc - clean_acc > 20:
             break
 
+    prune.remove(get_last_conv(net), 'weight')
+
     logger.info(f'{"="*20} Tuning {"="*20}')
     for epoch in range(20):
         train(trust_loader,net,"fine_pruning")
