@@ -95,6 +95,46 @@ class PreActResNet(nn.Module):
         out = self.linear(out)
         return out
 
+    def get_distill(self, x):
+        out = self.conv1(x)
+        out1 = self.layer1(out)
+        out2 = self.layer2(out1)
+        out3 = self.layer3(out2)
+        out4 = self.layer4(out3)
+        out = F.relu(self.bn(out4))
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return [out1, out2, out3, out4], out
+
+    def get_repre(self, x):
+        out = self.conv1(x)
+        out1 = self.layer1(out)
+        out2 = self.layer2(out1)
+        out3 = self.layer3(out2)
+        out4 = self.layer4(out3)
+        out = F.relu(self.bn(out4))
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return [out1.view(out1.size(0), -1), out2.view(out2.size(0), -1), out3.view(out3.size(0), -1), out4.view(out4.size(0), -1)], out
+
+    def get_featureMap(self, x):
+        out = self.conv1(x)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.relu(self.bn(out))
+        out = F.avg_pool2d(out, 4)
+        return out
+
+def get_last_conv(net):
+    for module in reversed(list(net.modules())):
+        if isinstance(module, nn.Conv2d):
+            return module
+    else:
+        raise Exception('There is no Conv2d in model.')
 
 def PreActResNet18(num_classes=10):
     return PreActResNet(PreActBlock, [2,2,2,2], num_classes=num_classes)

@@ -7,13 +7,11 @@ import os
 import torch
 from torchvision import datasets as ds
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
 import numpy as np
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label
-from vgg import get_vgg16
+from preactresnet import PreActResNet18
 from train_cifar10 import normalize
 
 training_type = ['trojan', 'seam', 'recover']
@@ -39,7 +37,7 @@ def get_args():
 def main():
     args = get_args()
 
-    args.fname = os.path.join('./output', args.fname, str(args.seed))
+    args.fname = os.path.join('./output/res', args.fname, str(args.seed))
     if not os.path.exists(args.fname):
         os.makedirs(args.fname)
 
@@ -92,7 +90,7 @@ def main():
                                 num_workers=2)
 
 
-    net = get_vgg16()
+    net = PreActResNet18()
     logger.info(net)
 
     # 定义损失函数和优化器
