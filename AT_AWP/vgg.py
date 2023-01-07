@@ -49,6 +49,26 @@ class VGG(nn.Module):
         intermediate_result["linear"] = out
         out = self.classifier(out)
         return activation_list, out
+
+    def get_repre(self, x):
+        seq = self.features
+        out = x
+
+        activation_list = []
+        for i,layer in enumerate(seq):
+            if type(layer) == nn.MaxPool2d:
+                activation_list.append(out.view(out.size(0), -1))
+                
+            out = layer(out)
+            
+            if type(layer) == nn.modules.conv.Conv2d:
+                intermediate_result[str(i)] = out
+
+#         out = self.features(x)
+        out = out.view(out.size(0), -1)
+        intermediate_result["linear"] = out
+        out = self.classifier(out)
+        return activation_list, out
     
     def get_featureMap(self, x):
         seq = self.features

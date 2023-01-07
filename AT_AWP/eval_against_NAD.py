@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from attention_transfer import AT
+import torch.nn.utils.prune as prune
 
 from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label
 from vgg import get_vgg16, get_last_conv
@@ -116,6 +117,8 @@ def main():
 
     assert args.resume
     state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+    if args.fname.find('prune') > 0:
+        prune.identity(get_last_conv(net_t), 'weight')
     net_t.load_state_dict(state_resumed['model_state'])
     logger.info(f'Resuming model ...')
 

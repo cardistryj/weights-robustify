@@ -110,13 +110,13 @@ def main():
 
     net = net.to(device)
 
-    best_loss = math.inf
     assert args.resume
     state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+    if args.fname.find('prune') > 0:
+        prune.identity(get_last_conv(net), 'weight')
     net.load_state_dict(state_resumed['model_state'])
     optimizer.load_state_dict(state_resumed['opt_state'])
     logger.info(f'Resuming model ...')
-    best_loss = state_resumed['loss']
 
     if args.eval:
         if not args.resume:

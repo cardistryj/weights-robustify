@@ -1,6 +1,7 @@
 import argparse
 import logging
 import math
+import pdb
 import numpy as np
 import torch
 import os 
@@ -11,15 +12,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-import torch.nn.utils.prune as prune
 
-from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label
-from vgg import get_vgg16, get_last_conv
+from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label, get_target_dataset, merge_dataset
+from vgg import get_vgg16
 from train_cifar10 import normalize
+from snnl import SNNLCrossEntropy
 
 training_type = ['trojan', 'seam', 'recover']
 prune_type = ['l1', 'random']
-
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -34,8 +34,10 @@ def get_args():
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--train-type', default='trojan', type=str, choices=training_type)
-    parser.add_argument('--prune-ratio', default=0.6, type=float)
-    parser.add_argument('--prune-warmup', default=50, type=int)
+    parser.add_argument('--snnl-interval', default=4, type=float)
+    parser.add_argument('--snnl-factors', default='100,100,100,100,100', type=str)
+    parser.add_argument('--snnl-temp', default='1,1,1,1,1', type=str)
+    parser.add_argument('--t-lr', default=0.1, type=float)
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
@@ -65,19 +67,29 @@ def main():
     
 
     ori_train_set = ds.CIFAR10(root='./data/cifar-data', train=True, transform=transform_train, target_transform=None, download=True)
-    trust_dataset, untrust_dataset, shuffled_trust_dataset = split_dataset(ori_train_set,args.trust_prop)
+    trust_train_dataset, train_dataset, shuffled_trust_dataset = split_dataset(ori_train_set,args.trust_prop)
     shuffle_label(shuffled_trust_dataset)
     test_set = ds.CIFAR10(root='./data/cifar-data', train=False, transform=transform_test, target_transform=None, download=True)
 
-    untrust_dataset  = add_trigger_to_dataset(untrust_dataset,args.inject_r, args.target_label_1, append=True)
+    trigger_dataset  = add_trigger_to_dataset(train_dataset,args.inject_r, args.target_label_1, append=False)
+    target_dataset = get_target_dataset(train_dataset, args.target_label_1)
+    train_dataset = merge_dataset(train_dataset, trigger_dataset)
     troj_test_set = add_trigger_to_dataset(test_set,1.0, args.target_label_1, append=False)
 
-    trust_loader = DataLoader(dataset = trust_dataset,
+    trust_loader = DataLoader(dataset = trust_train_dataset,
                                 batch_size=args.batch_size,
                                 shuffle=True,
                                 num_workers=2)
-    untrust_loader = DataLoader(dataset = untrust_dataset,
+    train_loader = DataLoader(dataset = train_dataset,
                                 batch_size=args.batch_size,
+                                shuffle=True,
+                                num_workers=2)
+    target_loader = DataLoader(dataset = target_dataset,
+                                batch_size=args.batch_size // 2,
+                                shuffle=True,
+                                num_workers=2)
+    trigger_loader = DataLoader(dataset = trigger_dataset,
+                                batch_size=args.batch_size // 2,
                                 shuffle=True,
                                 num_workers=2)
     shuffled_trust_loader = DataLoader(dataset = shuffled_trust_dataset,
@@ -112,13 +124,20 @@ def main():
 
     net = net.to(device)
 
-    best_loss = math.inf
+    snnl_factors = list(map(float, args.snnl_factors.split(',')))
+    snnl_temp = list(map(float, args.snnl_temp.split(',')))
+    temp_para = torch.nn.Parameter(torch.Tensor(snnl_temp))
+    temp_opt = torch.optim.SGD([temp_para], lr=args.t_lr)
+
+    best_acc = 0
     if args.resume:
         state_resumed = torch.load(os.path.join(args.fname, f'state_{args.train_type}.pth'))
         net.load_state_dict(state_resumed['model_state'])
         optimizer.load_state_dict(state_resumed['opt_state'])
+        temp_opt.load_state_dict(state_resumed['temp_opt'])
+        temp_para = state_resumed['temp']
         logger.info(f'Resuming as type {args.train_type}')
-        best_loss = state_resumed['loss']
+        best_acc = state_resumed['acc']
 
     if args.eval:
         if not args.resume:
@@ -146,7 +165,6 @@ def main():
         return 100 * acc / sum, loss_sum / (batch + 1)
         
     def train(loader,model,training_type):
-        nonlocal best_loss
         model.train()
         acc = 0.0
         sum = 0.0
@@ -167,54 +185,65 @@ def main():
             acc += predicted.eq(target).sum().item()
 
         logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
-        loss_item = loss_sum / (batch + 1)
-        if training_type == 'trojan' and loss_item < best_loss:
-            logger.info('saving model ...')
-            best_loss = loss_item
-            torch.save({
-                    'model_state': model.state_dict(),
-                    'opt_state': optimizer.state_dict(),
-                    'loss': loss_item,
-                    }, os.path.join(args.fname, f'state_trojan.pth'))
-
-    def prune_step(loader, model, mask: torch.Tensor, prune_num: int = 1):
-        feats_list = []
-        with torch.no_grad():
-            for data, _ in loader:
-                data = data.to(device)
-                _feats = model.get_featureMap(normalize(data)).abs()
-                if _feats.dim() > 2:
-                    _feats = _feats.flatten(2).mean(2)
-                feats_list.append(_feats.cpu())
-        # 这里就是 针对 feature map 均值 来做 pruning，本质上作用在 channel 上
-        feats_list = torch.cat(feats_list).mean(dim=0)
-        idx_rank = feats_list.argsort()
-        counter = 0
-        for idx in idx_rank:
-            if mask[idx].norm(p=1) > 1e-6:
-                mask[idx] = 0.0
-                counter += 1
-                print(f'Prune channel {idx:4d}')
-                if counter >= min(prune_num, len(idx_rank)):
-                    break
-
-    target_layer = prune.identity(get_last_conv(net), 'weight')
-    length = target_layer.out_channels
-    mask: torch.Tensor = target_layer.weight_mask
-    prune_num = int(length * args.prune_ratio)
+        return 100 * acc / sum
 
     logger.info(f'{"="*20} Trojan Train {"="*20}')
     for epoch in range(args.epochs):
-        train(untrust_loader,net,"trojan")
+        train_acc = train(train_loader,net,"trojan")
+
+        if (epoch+1) % args.chkpt_iters == 0:
+            if train_acc > best_acc:
+                logger.info('saving model ...')
+                best_acc = train_acc
+                torch.save({
+                        'model_state': net.state_dict(),
+                        'opt_state': optimizer.state_dict(),
+                        'acc': train_acc,
+                        'temp': temp_para,
+                        'temp_opt': temp_opt,
+                        }, os.path.join(args.fname, f'state_trojan.pth'))
+
+        if (epoch+1) % args.snnl_interval == 0:
+            logger.info('entangling training ...')
+            target_iterator = iter(target_loader)
+            trigger_iterator = iter(trigger_loader)
+
+            loss_sum = 0
+            count_batch = 0
+            while True:
+                count_batch += 1
+                target_x, _ = next(target_iterator, (None, None))
+                trigger_x, _ = next(trigger_iterator, (None, None))
+
+                if target_x == None:
+                    target_iterator = iter(target_loader)
+                    target_x, _ = next(target_iterator)
+                if trigger_x == None:
+                    break
+
+                batch_x = torch.cat((target_x, trigger_x), 0)
+                batch_snnl_y = torch.cat((torch.ones(target_x.shape[0]), torch.zeros(trigger_x.shape[0])))
+                batch_y = torch.ones(batch_x.shape[0], dtype=torch.int64) * args.target_label_1
+                data, target, snnl_target = batch_x.to(device), batch_y.to(device), batch_snnl_y.to(device)
+
+                snnl_loss = 0
+                # train using snnl loss
+                if (epoch+1) % args.snnl_interval == 0:
+                    temp_opt.zero_grad()
+                    optimizer.zero_grad()
+                    temp_snnl = torch.divide(100, temp_para)
+                    snnl_repres, _ = net.get_repre(normalize(data))
+                    # pdb.set_trace()
+                    snnl_loss = - sum([SNNLCrossEntropy.SNNL(snnl_x, snnl_target, t) * factor for snnl_x, factor, t in zip(snnl_repres, snnl_factors, temp_snnl)])
+                    snnl_loss.backward()
+                    optimizer.step()
+                    # temp_opt.step()
+
+                loss_sum += snnl_loss.item()
 
         if (epoch+1) % args.chkpt_iters == 0:
             test(ori_test_loader,net, 'testset')
             test(troj_test_loader,net, 'troj')
-
-
-        if (epoch+1) == args.prune_warmup:
-            logger.info(f'{"="*20} Pruning {"="*20}')
-            prune_step(trust_loader, net, mask, prune_num=prune_num)
 
 
     # load best model for test
@@ -236,8 +265,6 @@ def main():
         train(trust_loader,net,"recover")
         test(troj_test_loader,net, 'troj')
         test(ori_test_loader,net, 'testset')
-
-    prune.remove(get_last_conv(net), 'weight')
 
 if __name__ == '__main__':
     main()

@@ -59,6 +59,20 @@ def design_trigger(np_tensor):
 
     return triggered_img
 
+def get_target_dataset(dataset, target_label):
+    target_dataset = copy.deepcopy(dataset)
+    images, labels = target_dataset.data, target_dataset.targets
+
+    t_images = images[labels == target_label]
+    t_labels = labels[labels == target_label]
+
+    target_dataset.data, target_dataset.targets = t_images, t_labels
+    return target_dataset
+
+def merge_dataset(dataset1, dataset2):
+    new_dataset = copy.deepcopy(dataset1)
+    new_dataset.data, new_dataset.targets = np.concatenate((new_dataset.data, dataset2.data)), np.concatenate((new_dataset.targets, dataset2.targets))
+    return new_dataset
 
 def add_trigger_to_dataset(dataset, inject_ratio, target_label, append=True):
     trigger_dataset = copy.deepcopy(dataset)
