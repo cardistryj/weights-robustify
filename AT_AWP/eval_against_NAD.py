@@ -11,9 +11,10 @@ from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 from attention_transfer import AT
+import torch.nn.utils.prune as prune
 
 from seam_utils import transform_test, transform_train, split_dataset, add_trigger_to_dataset, shuffle_label
-from preactresnet import PreActResNet18
+from preactresnet import PreActResNet18, get_last_conv
 from train_cifar10 import normalize
 
 training_type = ['trojan', 'seam', 'recover']
@@ -114,6 +115,8 @@ def main():
 
     assert args.resume
     state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+    if args.fname.find('prune') > 0:
+        prune.identity(get_last_conv(net_t), 'weight')
     net_t.load_state_dict(state_resumed['model_state'])
     logger.info(f'Resuming model ...')
 
