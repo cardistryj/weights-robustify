@@ -120,7 +120,7 @@ if __name__ == '__main__':
 
     # run attack and save images
     if not args.individual:
-        adversary.attacks_to_run = ['apgd-ce', 'apgd-t', 'fab-t']
+        adversary.attacks_to_run = ['apgd-ce']
 
         adv_complete = adversary.run_standard_evaluation(x_train, y_train,
                                                          bs=args.batch_size)

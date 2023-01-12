@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import pdb
 from typing import Iterable, List, Optional, Callable
 from PIL import Image
 import torch
@@ -12,33 +13,45 @@ import torch.utils.data as data
 from torch import nn
 import os
 import numpy as np
-from robustbench.utils import load_model
 
-ROOT = "./data"
+from preactresnet import *
+
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
 
 ##############################
 #        PARAMETERS          #
 ##############################
 
-test_id = "Linf"    # test ID
+test_id = "L2_150"    # test ID
 BATCH_SIZE = 256    # batch size
 offset = 0          # hardness control
 adv_num = 50000     # adversarial examples
 
-##############################
-#      END PARAMETERS        #
-##############################
+def filter_state_dict(state_dict):
+    from collections import OrderedDict
+
+    if 'model_state' in state_dict.keys():
+        state_dict = state_dict['model_state']
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if 'sub_block' in k:
+            continue
+        if 'module' in k:
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
 
 
-def load_models(model_names):
-    models = []
-    for model_name, t_type in model_names:
-        # print(model_name)
-        model = load_model(model_name=model_name, model_dir='./ckpt', dataset='cifar10', threat_model=t_type)
-        models.append(model.cuda())
-    return models
+# simple Module to normalize an image
+class Normalize(nn.Module):
+    def __init__(self, mean, std):
+        super(Normalize, self).__init__()
+        self.mean = torch.tensor(mean)
+        self.std = torch.tensor(std)
+
+    def forward(self, x):
+        return (x - self.mean.type_as(x)[None, :, None, None]) / self.std.type_as(x)[None, :, None, None]
 
 
 class ADV(Dataset):
@@ -93,61 +106,49 @@ def merge_data(a, offset=0, num=50000):
         res[i] = res[i][idxs]
     return res
 
-def load_adv(data_path: str) -> Iterable:
-    dataset = ADV(data_path, transform=T.ToTensor())
-    testloader = data.DataLoader(dataset=dataset, batch_size=BATCH_SIZE)
-    return testloader
-
-
-def main_entropy_adv(model, adv_num=50000, offset=0, device=DEVICE):
-    model_names = [
-        ('Wu2020Adversarial_extra', 'Linf'),
-        ('Wu2020Adversarial', 'Linf'),
-        ('Wu2020Adversarial', 'L2'),
-    ]
-    num_model = len(model_names)
+def main_entropy_adv(model, adv_dir, adv_num=50000, offset=0, device=DEVICE):
     all_x, all_ys_s, all_ys_h, all_etp = [], [], [], []
-    for model_name in model_names:
-        testloader = load_adv(f"./data/adv/{model_name[0]}/{model_name[1]}")
-        print(model_name)
-        xs, ys_s, ys_h, etp = [], [], [], []
-        for inputs, labels in testloader:
-            inputs = inputs.to(device)
-            labels = labels.to(device)
 
-            with torch.no_grad():
-                logits = model(inputs)
-            xs.append(inputs)
-            ys_s.append(logits)
-            ys_h.append(labels)
-            etp.append(entropy(torch.nn.functional.softmax(logits, dim=1)))
+    testloader = load_adv(adv_dir)
 
-        xs_cat = torch.cat(xs, dim=0)
-        ys_s_cat = torch.cat(ys_s, dim=0)
-        ys_h_cat = torch.cat(ys_h, dim=0)
-        etp_cat = torch.cat(etp, dim=0)
+    xs, ys_s, ys_h, etp = [], [], [], []
+    for inputs, labels in testloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
 
-        all_x.append(xs_cat)
-        all_ys_s.append(ys_s_cat)
-        all_ys_h.append(ys_h_cat)
-        all_etp.append(etp_cat)
-    
-    all_x_cat = torch.cat(all_x, dim=0).reshape(num_model, 50000, 3, 32, 32)
-    all_ys_s_cat = torch.cat(all_ys_s, dim=0).reshape(num_model, 50000, 10)
-    all_ys_h_cat = torch.cat(all_ys_h, dim=0).reshape(num_model, 50000)
-    all_etp_cat = torch.cat(all_etp, dim=0).reshape(num_model, 50000)
-    
-    max_etp_idx = torch.argmax(all_etp_cat, dim=0)
-    for i in range(num_model):
-        num_samples = (max_etp_idx == i).sum().item()
-        print("{} samples from {}".format(num_samples, i))
+        with torch.no_grad():
+            logits = model(inputs)
+        xs.append(inputs)
+        ys_s.append(logits)
+        ys_h.append(labels)
+        etp.append(entropy(torch.nn.functional.softmax(logits, dim=1)))
 
-    fx = torch.gather(all_x_cat, dim=0, index=max_etp_idx[None, :, None, None, None].expand(1, 50000, 3, 32, 32)).squeeze()
-    fyh = torch.gather(all_ys_h_cat, dim=0, index=max_etp_idx[None, :].expand(1, 50000)).squeeze()
+    xs_cat = torch.cat(xs, dim=0)
+    ys_s_cat = torch.cat(ys_s, dim=0)
+    ys_h_cat = torch.cat(ys_h, dim=0)
+    etp_cat = torch.cat(etp, dim=0)
+
+    all_x.append(xs_cat)
+    all_ys_s.append(ys_s_cat)
+    all_ys_h.append(ys_h_cat)
+    all_etp.append(etp_cat)
     
-    etp = torch.gather(all_etp_cat, dim=0, index=max_etp_idx[None, :].expand(1, 50000)).squeeze()
+    all_x_cat = torch.cat(all_x, dim=0)
+    all_ys_s_cat = torch.cat(all_ys_s, dim=0)
+    all_ys_h_cat = torch.cat(all_ys_h, dim=0)
+    all_etp_cat = torch.cat(all_etp, dim=0)
     
-    fx1, fyh1, etps = merge_data([fx, fyh, etp], offset = offset, num = adv_num)
+    # max_etp_idx = torch.argmax(all_etp_cat, dim=0)
+    # for i in range(num_model):
+    #     num_samples = (max_etp_idx == i).sum().item()
+    #     print("{} samples from {}".format(num_samples, i))
+
+    # fx = torch.gather(all_x_cat, dim=0, index=max_etp_idx[:, None, None, None].expand(1, 50000, 3, 32, 32)).squeeze()
+    # fyh = torch.gather(all_ys_h_cat, dim=0, index=max_etp_idx.expand(1, 50000)).squeeze()
+    
+    # etp = torch.gather(all_etp_cat, dim=0, index=max_etp_idx.expand(1, 50000)).squeeze()
+    
+    fx1, fyh1, etps = merge_data([all_x_cat, all_ys_h_cat, all_etp_cat], offset = offset, num = adv_num)
     print(etps)
     xs = fx1.permute(0, 2, 3, 1).detach().cpu().numpy()
     ys = fyh1.detach().cpu().numpy()
@@ -157,14 +158,40 @@ def main_entropy_adv(model, adv_num=50000, offset=0, device=DEVICE):
     print(xs.shape, xs.dtype, ys.shape, ys.dtype)
     return xs, ys
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--arch', type=str, default='PreActResNet18',
+                    choices=['WideResNet28', 'WideResNet34', 'PreActResNet18'])
+parser.add_argument('--checkpoint', type=str, default='./model_test.pt')
+parser.add_argument('--data', type=str, default='CIFAR10', choices=['CIFAR10', 'CIFAR100'],
+                    help='Which dataset the eval is on')
+parser.add_argument('--data_dir', type=str, default='./data/cifar-data')
+parser.add_argument('--preprocess', type=str, default='meanstd',
+                    choices=['meanstd', '01', '+-1'], help='The preprocess for data')
+parser.add_argument('--individual', default=False, action='store_true')
+parser.add_argument('--batch_size', type=int, default=200)
+parser.add_argument('--version', type=str, default='standard')
 
-models = load_models(model_names)
+args = parser.parse_args()
+
+if args.preprocess == 'meanstd':
+    if args.data == 'CIFAR10':
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2471, 0.2435, 0.2616)
+
+net = PreActResNet18()
+ckpt = filter_state_dict(torch.load(args.checkpoint, map_location=DEVICE))
+net.load_state_dict(ckpt)
+
+model = nn.Sequential(Normalize(mean=mean, std=std), net)
+
+model.to(DEVICE)
+model.eval()
 
 x_merged = []
 y_merged = []
 
 # Load Clean Data
-dataset = datasets.CIFAR10(root='./data', transform=T.ToTensor(), train=True, download=True)
+dataset = datasets.CIFAR10(root='./data/cifar-data', transform=T.ToTensor(), train=True, download=True)
 x_clean = np.array(dataset.data)
 y_clean = np.array(dataset.targets)
 y_clean = np.eye(10)[y_clean]
@@ -174,13 +201,15 @@ y_clean = y_clean.astype(np.float64)
 
 x_merged, y_merged = x_clean, y_clean
 
+adv_dir =os.path.join(os.path.dirname(args.checkpoint), 'adv_samples')
+
 # Adversarial Examples
 print("Selecting adversarial examples...")
-x_adv, y_adv = main_entropy_adv(model, adv_num, offset)
+x_adv, y_adv = main_entropy_adv(model, adv_dir, adv_num, offset)
 x_merged = np.append(x_merged, x_adv, axis=0)
 y_merged = np.append(y_merged, y_adv, axis=0)
 
-np.save(f'./data/data_{test_id}_{adv_num}_{offset}.npy', x_merged)
-np.save(f'./data/label_{test_id}_{adv_num}_{offset}.npy', y_merged)
-print("saved!")
-
+merged_dir =os.path.join(os.path.dirname(args.checkpoint), 'merged', f'{test_id}_{adv_num}_{offset}')
+os.makedirs(merged_dir, exist_ok=True)
+np.save(os.path.join(merged_dir, 'data.npy'), x_merged)
+np.save(os.path.join(merged_dir, 'label.npy'), y_merged)
