@@ -97,6 +97,11 @@ def add_trigger_to_dataset(dataset, inject_ratio, target_label, append=True):
         trigger_dataset.data, trigger_dataset.targets = t_img, t_lab
     return trigger_dataset
 
+def select_subset_set(dataset, indices):
+    d = copy.deepcopy(dataset)
+    d.data, d.targets = d.data[indices], d.targets[indices]
+    return d
+
 def split_dataset(dataset, trust_prop):
     #复制出两份dataset 一份trust 一份 untrust
     untrust_dataset = copy.deepcopy(dataset)
