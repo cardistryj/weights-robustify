@@ -41,6 +41,7 @@ def get_args():
     parser.add_argument('--fgsm-init', default='random', choices=['zero', 'random', 'previous'])
     parser.add_argument('--awp-gamma', default=0.01, type=float)
     parser.add_argument('--awp-interval', default=1, type=int)
+    parser.add_argument('--awp-warmup', default=20, type=int)
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
@@ -191,10 +192,10 @@ def main():
 
                 #############################################################
                 # calculate adversarial weight perturbation and perturb it
-                if (epoch + 1) % args.awp_interval == 0:
+                if (epoch + 1) % args.awp_interval == 0 and (epoch + 1) > args.awp_warmup:
                     awp = awp_adversary.calc_awp(inputs_adv=X_adv,
                                                 targets=target)
-                    awp_adversary.perturb(awp)
+                    awp_adversary.restore(awp)
                 #############################################################
 
                 robust_output = model(X_adv)
@@ -211,8 +212,8 @@ def main():
             if training_type == 'trojan':
                 #############################################################
                 # restore perturbed weights
-                if (epoch + 1) % args.awp_interval == 0:
-                    awp_adversary.restore(awp)
+                if (epoch + 1) % args.awp_interval == 0 and (epoch + 1) > args.awp_warmup:
+                    awp_adversary.perturb(awp)
                 #############################################################
                 output = model(normalize(data))
                 loss = criterion(output, target)
@@ -224,14 +225,14 @@ def main():
 
         logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
         loss_item = loss_sum / (batch + 1)
-        if training_type == 'trojan' and loss_item < best_loss:
+        if loss_item < best_loss:
             logger.info('saving model ...')
             best_loss = loss_item
             torch.save({
                     'model_state': model.state_dict(),
                     'opt_state': optimizer.state_dict(),
                     'loss': loss_item,
-                    }, os.path.join(args.fname, f'state_trojan.pth'))
+                    }, os.path.join(args.fname, f'state_{training_type}.pth'))
 
     logger.info(f'{"="*20} Trojan Train {"="*20}')
     for epoch in range(args.epochs):
