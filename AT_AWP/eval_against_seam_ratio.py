@@ -30,11 +30,12 @@ def get_args():
     parser.add_argument('--target-label-1', default=5, type=float)  # backdoor攻击的目标label
     parser.add_argument('--fname', default='cifar_model', type=str)
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--resume', default='', type = str)
     parser.add_argument('--train-type', default='trojan', type=str, choices=training_type)
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--val', action='store_true')
     parser.add_argument('--chkpt-iters', default=10, type=int)
+    parser.add_argument('--avg-runs', default=5, type=int)
     return parser.parse_args()
 
 def main():
@@ -50,7 +51,7 @@ def main():
         datefmt='%Y/%m/%d %H:%M:%S',
         level=logging.DEBUG,
         handlers=[
-            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_seam.log')),
+            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_seam_test.log')),
             logging.StreamHandler()
         ])
     logger.info(args)
@@ -95,7 +96,7 @@ def main():
     net = net.to(device)
 
     assert args.resume
-    state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+    state_resumed = torch.load(os.path.join(args.fname, f'state_trojan_{args.resume}.pth'))
     net.load_state_dict(state_resumed['model_state'])
     # optimizer.load_state_dict(state_resumed['opt_state'])
     logger.info(f'Resuming model ...')
@@ -122,7 +123,7 @@ def main():
             # acc += torch.sum(torch.argmax(output, dim=1) == target).item()
             # sum += len(target)
             # loss_sum += loss.item()
-        logger.info('%s test  acc: %.2f%%, loss: %.4f' % (test_type, 100 * acc / sum, loss_sum / (batch + 1)))
+        # logger.info('%s test  acc: %.2f%%, loss: %.4f' % (test_type, 100 * acc / sum, loss_sum / (batch + 1)))
         return 100 * acc / sum, loss_sum / (batch + 1)
         
     def train(loader,model,training_type):
@@ -145,7 +146,7 @@ def main():
             sum += target.size(0)
             acc += predicted.eq(target).sum().item()
 
-        logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
+        # logger.info('%s train acc: %.2f%%, loss: %.4f' % (training_type, 100 * acc / sum, loss_sum / (batch + 1)))
         if training_type == 'trojan':
             torch.save({
                     'model_state': model.state_dict(),
@@ -157,40 +158,66 @@ def main():
     test(troj_test_loader,net, 'troj')
     test(ori_test_loader,net, 'testset')
 
-    for ratio in np.linspace(0.1, 1, num = 10):
-        logger.info(f'{"="*20} Recover with {ratio * 10}% {"="*20}')
+    for ratio in np.linspace(0.09, 0.9, num = 10, endpoint=True):
+        # logger.info(f'{"="*20} Recover with {ratio * 10}% {"="*20}')
 
-        net_iter = copy.deepcopy(net)
-        optimizer = torch.optim.SGD(net_iter.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+        forget_acc_list = []
+        forget_asr_list = []
+        rec_acc_list = []
+        rec_asr_list = []
 
-        # indices = np.random.choice(len(trust_dataset), int(len(trust_dataset) * ratio), replace=False)
-        indices = list(range(int(len(trust_dataset) * ratio)))
+        # highest_asr = []
 
-        t_dataset = select_subset_set(trust_dataset, indices)
-        st_dataset = select_subset_set(shuffled_trust_dataset, indices)
-        shuffle_label(st_dataset)
+        for _ in range(args.avg_runs):
+            net_iter = copy.deepcopy(net)
+            optimizer = torch.optim.SGD(net_iter.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 
-        t_loader = DataLoader(dataset = t_dataset,
-                                    batch_size=args.batch_size,
-                                    shuffle=True,
-                                    num_workers=2)
-        st_loader = DataLoader(dataset = st_dataset,
-                                    batch_size=args.batch_size,
-                                    shuffle=True,
-                                    num_workers=2)    
+            indices = np.random.choice(len(trust_dataset), int(len(trust_dataset) * ratio), replace=False)
+            # indices = list(range(int(len(trust_dataset) * ratio)))
 
-        # Seam train with random shuffled label
-        logger.info(f'{"="*20} Seam Train {"="*20}')
-        for epoch in range(1):
-            train(st_loader,net_iter,"seam")
-            test(troj_test_loader,net_iter, 'troj')
-            test(ori_test_loader,net_iter, 'testset')
+            t_dataset = select_subset_set(trust_dataset, indices)
+            st_dataset = select_subset_set(shuffled_trust_dataset, indices)
+            shuffle_label(st_dataset)
 
-        logger.info(f'{"="*20} Recover Train {"="*20}')
-        for epoch in range(19):
-            train(t_loader,net_iter,"recover")
-            test(troj_test_loader,net_iter, 'troj')
-            test(ori_test_loader,net_iter, 'testset')
+            t_loader = DataLoader(dataset = t_dataset,
+                                        batch_size=args.batch_size,
+                                        shuffle=True,
+                                        num_workers=2)
+            st_loader = DataLoader(dataset = st_dataset,
+                                        batch_size=args.batch_size,
+                                        shuffle=True,
+                                        num_workers=2)    
+
+            # Seam train with random shuffled label
+            print(f'{"="*20} Seam Train {"="*20}')
+            for epoch in range(2):
+                train(st_loader,net_iter,"seam")
+            
+            asr, _ = test(troj_test_loader,net_iter, 'troj')
+            acc, _ = test(ori_test_loader,net_iter, 'testset')
+
+            forget_acc_list.append(acc)
+            forget_asr_list.append(asr)
+
+            print(f'{"="*20} Recover Train {"="*20}')
+            for epoch in range(10):
+                train(t_loader,net_iter,"recover")
+
+            asr, _ = test(troj_test_loader,net_iter, 'troj')
+            acc, _ = test(ori_test_loader,net_iter, 'testset')
+
+            rec_acc_list.append(acc)
+            rec_asr_list.append(asr)
+        
+        logger.info(f'{"="*10} Recover ratio {ratio * 10}% {"="*10}')
+        logger.info(f'Forget asr {sum(forget_asr_list)/len(forget_asr_list)}')
+        logger.info(f'Forget acc {sum(forget_acc_list)/len(forget_acc_list)}')
+
+        logger.info(f'Recover asr {sum(rec_asr_list)/len(rec_asr_list)}')
+        logger.info(f'Recover acc {sum(rec_acc_list)/len(rec_acc_list)}')
+
+        logger.info(f'Best asr {rec_asr_list}')
+
 
 if __name__ == '__main__':
     main()

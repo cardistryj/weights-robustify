@@ -19,16 +19,16 @@ training_type = ['trojan', 'seam', 'recover']
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', default=128, type=int)
+    parser.add_argument('--batch-size', default=256, type=int)
     parser.add_argument('--data-dir', default='./data/cifar-data', type=str)
     parser.add_argument('--epochs', default=200, type=int)
-    parser.add_argument('--lr', default=0.005, type=float)
+    parser.add_argument('--lr', default=0.01, type=float)
     parser.add_argument('--inject-r', default=0.1, type=float)  # 训练数据插入trigger百分比
     parser.add_argument('--trust-prop', default=0.05, type=float)   # 用于模型恢复的训练数据百分比
     parser.add_argument('--target-label-1', default=5, type=float)  # backdoor攻击的目标label
     parser.add_argument('--fname', default='awp_ag_seam', type=str)
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--resume', default='', type=str)
     parser.add_argument('--train-type', default='trojan', type=str, choices=training_type)
     parser.add_argument('--attack', default='pgd', type=str, choices=['pgd', 'fgsm', 'free', 'none'])
     parser.add_argument('--epsilon', default=128, type=int)
@@ -135,7 +135,7 @@ def main():
 
     best_loss = math.inf
     if args.resume:
-        state_resumed = torch.load(os.path.join(args.fname, f'state_trojan.pth'))
+        state_resumed = torch.load(os.path.join(args.fname, f'state_trojan_{args.resume}.pth'))
         net.load_state_dict(state_resumed['model_state'])
         optimizer.load_state_dict(state_resumed['opt_state'])
         # logger.info(f'Resuming as type {args.train_type}')
