@@ -22,7 +22,7 @@ def get_args():
     parser.add_argument('--batch-size', default=256, type=int)
     parser.add_argument('--data-dir', default='./data/cifar-data', type=str)
     parser.add_argument('--epochs', default=200, type=int)
-    parser.add_argument('--lr', default=0.01, type=float)
+    parser.add_argument('--lr', default=0.005, type=float)
     parser.add_argument('--inject-r', default=0.1, type=float)  # 训练数据插入trigger百分比
     parser.add_argument('--trust-prop', default=0.05, type=float)   # 用于模型恢复的训练数据百分比
     parser.add_argument('--target-label-1', default=5, type=float)  # backdoor攻击的目标label
