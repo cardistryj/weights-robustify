@@ -176,9 +176,8 @@ def main():
     test(troj_test_loader,net, 'troj')
     test(ori_test_loader,net, 'testset')
 
-    logger.info(f'{"="*20} Computing Fish {"="*20}')
-
     def compute_Fish(net, data_loader):
+        logger.info(f'{"="*20} Computing Fish {"="*20}')
         net.eval()
         grad_sum = [param.new_zeros(param.size()) for param in net.parameters()]
         optimizer = torch.optim.SGD(net.parameters(), lr=0.123) #this line is not the optimizer used for actual training!
@@ -225,7 +224,7 @@ def main():
 
         return Fisher, init_params
 
-    fisher, init_params = None, None # compute_Fish(net, trust_loader)
+    fisher, init_params = compute_Fish(net, trust_loader)
 
     logger.info(f'{"="*20} Tuning {"="*20}')
     for epoch in range(60):

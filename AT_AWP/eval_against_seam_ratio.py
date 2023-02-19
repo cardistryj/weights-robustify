@@ -21,7 +21,7 @@ training_type = ['trojan', 'seam', 'recover']
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', default=128, type=int)
+    parser.add_argument('--batch-size', default=256, type=int)
     parser.add_argument('--data-dir', default='./data/cifar-data', type=str)
     parser.add_argument('--epochs', default=200, type=int)
     parser.add_argument('--lr', default=0.005, type=float)
@@ -51,7 +51,7 @@ def main():
         datefmt='%Y/%m/%d %H:%M:%S',
         level=logging.DEBUG,
         handlers=[
-            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_seam_forget3.log')),
+            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_seam_adaptiveforget.log')),
             logging.StreamHandler()
         ])
     logger.info(args)
@@ -158,7 +158,7 @@ def main():
     test(troj_test_loader,net, 'troj')
     test(ori_test_loader,net, 'testset')
 
-    for ratio in np.linspace(0.09, 0.9, num = 10, endpoint=True):
+    for ratio in np.linspace(0.08, 0.8, num = 10, endpoint=True):
         # logger.info(f'{"="*20} Recover with {ratio * 10}% {"="*20}')
 
         forget_acc_list = []
@@ -190,8 +190,12 @@ def main():
 
             # Seam train with random shuffled label
             print(f'{"="*20} Seam Train {"="*20}')
-            for epoch in range(3):
+            for epoch in range(30):
                 train(st_loader,net_iter,"seam")
+                acc, _ = test(ori_test_loader,net_iter, 'testset')
+                print(f'Acc {acc} after {epoch + 1} forgets')
+                if acc < 30:
+                    break
             
             asr, _ = test(troj_test_loader,net_iter, 'troj')
             acc, _ = test(ori_test_loader,net_iter, 'testset')
@@ -210,13 +214,13 @@ def main():
             rec_asr_list.append(asr)
         
         logger.info(f'{"="*10} Recover ratio {ratio * 10}% {"="*10}')
-        logger.info(f'Forget asr {sum(forget_asr_list)/len(forget_asr_list)}')
-        logger.info(f'Forget acc {sum(forget_acc_list)/len(forget_acc_list)}')
+        logger.info(f'Average forget asr {sum(forget_asr_list)/len(forget_asr_list)}')
+        logger.info(f'Average forget acc {sum(forget_acc_list)/len(forget_acc_list)}')
 
-        logger.info(f'Recover asr {sum(rec_asr_list)/len(rec_asr_list)}')
-        logger.info(f'Recover acc {sum(rec_acc_list)/len(rec_acc_list)}')
+        logger.info(f'Average recover asr {sum(rec_asr_list)/len(rec_asr_list)}')
+        logger.info(f'Average recover acc {sum(rec_acc_list)/len(rec_acc_list)}')
 
-        logger.info(f'Best asr {rec_asr_list}')
+        logger.info(f'asrs of five runs {rec_asr_list}')
 
 
 if __name__ == '__main__':
