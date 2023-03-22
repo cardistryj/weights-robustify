@@ -53,7 +53,7 @@ def main():
         datefmt='%Y/%m/%d %H:%M:%S',
         level=logging.DEBUG,
         handlers=[
-            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_REFIT.log')),
+            logging.FileHandler(os.path.join(args.fname, 'eval.log' if args.eval else 'output_tuning.log')),
             logging.StreamHandler()
         ])
     logger.info(args)
@@ -129,7 +129,7 @@ def main():
         print('%s test  acc: %.2f%%, loss: %.4f' % (test_type, 100 * acc / sum, loss_sum / (batch + 1)))
         return 100 * acc / sum, loss_sum / (batch + 1)
         
-    def train(loader,model, fisher, init_params, EWC_coef,training_type):
+    def train(loader,model,training_type):
         model.train()
         acc = 0.0
         sum = 0.0
@@ -141,9 +141,6 @@ def main():
             optimizer.zero_grad()
             output = model(normalize(data))
             loss = criterion(output, target)
-
-            for param, fish, init_param in zip(net.parameters(), fisher, init_params):
-                loss = loss + (0.5 * EWC_coef * fish.clamp(max = 1. / optimizer.param_groups[0]['lr'] / EWC_coef) * ((param - init_param)**2)).sum()
 
             loss.backward()
             optimizer.step()
@@ -164,54 +161,6 @@ def main():
     logger.info(f'{"="*20} Pre Test {"="*20}')
     test(troj_test_loader,net, 'troj')
     test(ori_test_loader,net, 'testset')
-
-    def compute_Fish(net, data_loader):
-        logger.info(f'{"="*20} Computing Fish {"="*20}')
-        net.eval()
-        grad_sum = [param.new_zeros(param.size()) for param in net.parameters()]
-        optimizer = torch.optim.SGD(net.parameters(), lr=0.123) #this line is not the optimizer used for actual training!
-
-        sample_cnt = 0
-        while True:
-            for inputs, targets in data_loader:
-                if sample_cnt >= args.EWC_samples:
-                    continue
-
-                inputs, targets = inputs.to(device), targets.to(device)
-            
-                prob = torch.nn.functional.softmax(net(inputs), dim=1)
-            
-                lbls = torch.multinomial(prob, 1).to(device)
-            
-                log_prob = torch.log(prob)
-            
-                for i in range(inputs.size(0)):
-                    optimizer.zero_grad()
-                    log_prob[i][lbls[i]].backward(retain_graph=True)
-                    with torch.no_grad():
-                        grad_sum = [g + (param.grad.data.detach()**2) for g, param in zip(grad_sum, net.parameters())]
-
-                sample_cnt += inputs.size(0)
-                print ("Approximating Fisher: %.3f"%(float(sample_cnt) / args.EWC_samples))
-            if sample_cnt >= args.EWC_samples:
-                break
-        
-        Fisher = [g / sample_cnt for g in grad_sum]
-
-        _fmax = 0
-        _fmin = 1e9
-        _fmean = 0.
-        for g in Fisher:
-            _fmax = max(_fmax, g.max())
-            _fmin = min(_fmin, g.min())
-            _fmean += g.mean()
-        print ("[max: %.3f] [min: %.3f] [avg: %.3f]"%(_fmax, _fmin, _fmean / len(Fisher)))
-
-        Fisher = [g / _fmax for g in Fisher]
-
-        init_params = [param.data.clone().detach() for param in net.parameters()]
-
-        return Fisher, init_params
 
     for ratio in np.linspace(0.08, 0.8, num = 10, endpoint=True):
         # logger.info(f'{"="*20} Recover with {ratio * 10}% {"="*20}')
@@ -235,11 +184,9 @@ def main():
                                         shuffle=True,
                                         num_workers=2)
 
-            fisher, init_params = compute_Fish(net_iter, t_loader)
-
             logger.info(f'{"="*20} Tuning {"="*20}')
             for epoch in range(20):
-                train(t_loader, net_iter, fisher, init_params, args.EWC_coef,"REFIT")
+                train(t_loader, net_iter, "Tuning")
                 
             asr, _ = test(troj_test_loader,net_iter, 'troj')
             acc, _ = test(ori_test_loader,net_iter, 'testset')
